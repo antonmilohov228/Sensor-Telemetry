@@ -27,7 +27,7 @@ json load_json(const string& fname)
     return j;
 }
 
-// Генератор файлов (объединил в одну функцию с флагом ошибок)
+// Генератор файлов 
 void create_files(int count, bool with_errors)
 {
     mt19937 gen(time(nullptr));
@@ -133,7 +133,7 @@ void process_sensor(const json& j_data, const string& target_sensor, int win_siz
     }
     double avg = sum / vals.size();
 
-    // Медиана (нужна сортировка)
+    // Медиана 
     vector<double> temp = vals;
     sort(temp.begin(), temp.end());
     
