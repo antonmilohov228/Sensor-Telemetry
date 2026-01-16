@@ -8,12 +8,89 @@
 #include <algorithm>
 #include <vector>
 #include <chrono>
+#include <thread>
+
+// --- КРОССПЛАТФОРМЕННЫЙ БЛОК ---
+#ifdef _WIN32
+    #include <conio.h>
+    #include <windows.h>
+    #define CLEAR_COMMAND "cls"
+#else
+    #include <unistd.h>
+    #include <termios.h>
+    #include <stdio.h>
+    #define CLEAR_COMMAND "clear"
+#endif
 
 #include "json.hpp"
 
 using namespace std;
 using json = nlohmann::json;
 
+// --- РЕАЛИЗАЦИЯ getch() ДЛЯ MACOS/LINUX ---
+#ifndef _WIN32
+char my_getch() {
+    char buf = 0;
+    struct termios old = {0};
+    if (tcgetattr(0, &old) < 0)
+        perror("tcsetattr()");
+    old.c_lflag &= ~ICANON; // Отключаем буферизацию (построчный ввод)
+    old.c_lflag &= ~ECHO;   // Отключаем эхо (вывод нажатой клавиши)
+    old.c_cc[VMIN] = 1;
+    old.c_cc[VTIME] = 0;
+    if (tcsetattr(0, TCSANOW, &old) < 0)
+        perror("tcsetattr ICANON");
+    if (read(0, &buf, 1) < 0)
+        perror("read()");
+    old.c_lflag |= ICANON;
+    old.c_lflag |= ECHO;
+    if (tcsetattr(0, TCSADRAIN, &old) < 0)
+        perror("tcsetattr ~ICANON");
+    return buf;
+}
+#else
+// Для Windows просто обертка над _getch
+char my_getch() {
+    return _getch();
+}
+#endif
+
+// --- ФУНКЦИИ ИНТЕРФЕЙСА ---
+
+void setupConsole() {
+#ifdef _WIN32
+    // На Windows включаем UTF-8 и цвет
+    SetConsoleCP(65001);
+    SetConsoleOutputCP(65001);
+    system("color 0B");
+#else
+    // На Mac/Linux просто включаем цвет через ANSI
+    std::cout << "\033[1;36m";
+#endif
+}
+
+void printHeader() {
+    system(CLEAR_COMMAND);
+    std::cout << "===============================================================" << std::endl;
+    std::cout << "   SENSOR TELEMETRY SYSTEM | v.1.0-RELEASE | AUTH: A.MILOKHOV  " << std::endl;
+    std::cout << "===============================================================" << std::endl;
+}
+
+void showLoadingBar(string taskName) {
+    cout << taskName << " [";
+    for (int i = 0; i < 20; i++) {
+        // Кроссплатформенный вывод блока
+        #ifdef _WIN32
+            cout << (char)219; 
+        #else
+            cout << "█"; // UTF-8 блок для Mac/Linux
+        #endif
+        
+        cout.flush();
+        this_thread::sleep_for(chrono::milliseconds(30));
+    }
+    cout << "] Done!" << endl;
+}
 
 // Функция чтения файла
 json load_json(const string& fname)
@@ -21,7 +98,7 @@ json load_json(const string& fname)
     ifstream f(fname);
     if (!f.is_open()) {
         cerr << "[Ошибка] Не удалось открыть файл: " << fname << endl;
-        return json{}; // Возвращаем пустой объект
+        return json{}; 
     }
     json j;
     f >> j;
@@ -31,9 +108,9 @@ json load_json(const string& fname)
 // Генератор файлов 
 void create_files(int count, bool with_errors)
 {
-    mt19937 gen(time(nullptr));
+    mt19937 gen(static_cast<unsigned int>(time(nullptr)));
     uniform_real_distribution<> dist_val(0.0, 100.0);
-    uniform_int_distribution<> dist_err(0, 20); // Шанс ошибки
+    uniform_int_distribution<> dist_err(0, 20); 
 
     for (int k = 0; k < count; k++) {
         json arr = json::array();
@@ -46,17 +123,14 @@ void create_files(int count, bool with_errors)
             ostringstream ss;
             ss << "2025-06-01T00:" << setw(2) << setfill('0') << i << ":00Z";
             
-            // Если нужны ошибки, иногда портим дату
             if (with_errors && dist_err(gen) != 0) {
                  obj["ts"] = ss.str();
             } else if (!with_errors) {
                  obj["ts"] = ss.str();
             }
-            // Иначе ts просто не запишется (пропуск поля)
 
             double val = dist_val(gen);
             
-            // Если нужны ошибки, иногда делаем некорректное значение
             if (with_errors && dist_err(gen) == 1) val = -50.0;
             
             obj["value"] = val;
@@ -75,20 +149,17 @@ void check_validity(const json& j_data)
     set<string> unique_ts;
 
     for (const auto& el : j_data) {
-        // 1. Проверка поля ts
         if (!el.contains("ts")) {
             cout << "Warning: пропущено поле 'ts'" << endl;
             continue;
         }
 
         string t = el["ts"];
-        // Проверка на дубли
         if (unique_ts.find(t) != unique_ts.end()) {
             cout << "Warning: дубликат времени -> " << t << endl;
         }
         unique_ts.insert(t);
 
-        // 2. Проверка значения
         if (!el.contains("value") || !el["value"].is_number()) {
             cout << "Warning: некорректный тип 'value'" << endl;
         }
@@ -106,7 +177,6 @@ void process_sensor(const json& j_data, const string& target_sensor, int win_siz
 {
     vector<double> vals;
 
-    // Фильтруем данные только нужного сенсора
     for (const auto& el : j_data) {
         if (el.value("sensor", "") == target_sensor && el.contains("value")) {
             if (el["value"].is_number()) {
@@ -116,11 +186,10 @@ void process_sensor(const json& j_data, const string& target_sensor, int win_siz
     }
 
     if (vals.empty()) {
-        // cout << "Данные для сенсора " << target_sensor << " не найдены." << endl;
         return;
     }
 
-    // --- Блок 1: Статистика (Min, Max, Avg, Median) ---
+    // --- Блок 1: Статистика ---
     auto t1 = chrono::high_resolution_clock::now();
 
     double sum = 0;
@@ -146,13 +215,12 @@ void process_sensor(const json& j_data, const string& target_sensor, int win_siz
         median = (temp[sz / 2 - 1] + temp[sz / 2]) / 2.0;
 
     auto t2 = chrono::high_resolution_clock::now();
-    auto dur_stat = chrono::duration_cast<chrono::microseconds>(t2 - t1).count();
+    // auto dur_stat = chrono::duration_cast<chrono::microseconds>(t2 - t1).count(); // unused variable
 
-    // --- Блок 2: Скользящее окно и аномалии ---
+    // --- Блок 2: Скользящее окно ---
     auto t3 = chrono::high_resolution_clock::now();
     
-    vector<int> anomaly_indices;
-    // Проходим окном
+    vector<size_t> anomaly_indices;
     for (size_t i = 0; i + win_size <= vals.size(); ++i) {
         double w_sum = 0;
         for (int k = 0; k < win_size; ++k) {
@@ -160,24 +228,21 @@ void process_sensor(const json& j_data, const string& target_sensor, int win_siz
         }
         double w_avg = w_sum / win_size;
         
-        // Текущий элемент (последний в окне)
         double cur = vals[i + win_size - 1];
 
-        // Критерий аномалии: отклонение более чем на 50% от среднего по окну
         if (cur > w_avg * 1.5 || cur < w_avg * 0.5) {
             anomaly_indices.push_back(i + win_size - 1);
         }
     }
 
     auto t4 = chrono::high_resolution_clock::now();
-    auto dur_win = chrono::duration_cast<chrono::microseconds>(t4 - t3).count();
+    // auto dur_win = chrono::duration_cast<chrono::microseconds>(t4 - t3).count(); // unused variable
 
-    // Вывод результатов (если это не просто замер времени)
     if (!show_timing) {
         cout << "\n=== Результаты для: " << target_sensor << " ===" << endl;
         cout << "Всего записей: " << vals.size() << endl;
         cout << "Min: " << min_v << " | Max: " << max_v << endl;
-        cout << "Avg: " << avg   << " | Median: " << median << endl;
+        cout << "Avg: " << avg    << " | Median: " << median << endl;
         cout << "Найдено аномалий: " << anomaly_indices.size() << endl;
         
         if (!anomaly_indices.empty()) {
@@ -189,35 +254,31 @@ void process_sensor(const json& j_data, const string& target_sensor, int win_siz
             }
         }
     } 
-    else {
-        // Вывод для бенчмарка
-       // cout << "Median calc: " << dur_stat << " mcs, Window calc: " << dur_win << " mcs" << endl;
-    }
 }
 
 int main()
 {
-setlocale(LC_ALL, "Russian");
-    setConsoleColor(); 
-    
+    setupConsole(); // Вызвали нашу универсальную функцию настройки
+
     printHeader();
     showLoadingBar("Инициализация системного ядра");
     showLoadingBar("Загрузка парсера nlohmann/json");
     showLoadingBar("Проверка калибровки сенсоров");
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    
-    cout << "=== SensorTelemetry v1.0 ===" << endl;
+    this_thread::sleep_for(chrono::milliseconds(500));
+
+    cout << "\n=== SensorTelemetry v1.0 ===" << endl;
     cout << "Студент: Милохов А.А." << endl;
     cout << "============================" << endl;
+    this_thread::sleep_for(chrono::seconds(1));
 
     while (true) {
         printHeader();
-        cout << "\nМеню:" << endl;
+        cout << "\n--- ГЛАВНОЕ МЕНЮ ---" << endl;
         cout << "1. Анализ данных (чтение -> валидация -> статистика)" << endl;
         cout << "2. Генерация/Тесты (Debug Mode)" << endl;
         cout << "3. Выход" << endl;
-        cout << "> ";
-        
+        cout << "\nВаш выбор > ";
+
         string choice;
         cin >> choice;
 
@@ -225,33 +286,38 @@ setlocale(LC_ALL, "Russian");
             int cnt;
             cout << "Сколько файлов обработать? ";
             cin >> cnt;
-            
+
             string sens;
             cout << "Имя сенсора (например, s1): ";
             cin >> sens;
-            
+
             int w_size;
             cout << "Размер окна: ";
             cin >> w_size;
 
             for (int i = 0; i < cnt; i++) {
                 string fn = "data_" + to_string(i) + ".json";
-                cout << "Загрузка " << fn << "... ";
+                cout << "\nЗагрузка " << fn << "... ";
                 json j = load_json(fn);
-                
-                if (j.empty()) continue; // Пропуск если файл битый
+
+                if (j.empty()) continue;
 
                 check_validity(j);
                 process_sensor(j, sens, w_size, false);
             }
+            cout << "\nНажмите любую клавишу для возврата в меню...";
+            
+            my_getch(); // Универсальная пауза
         }
         else if (choice == "2") {
-            cout << "\n--- Debug Menu ---" << endl;
+            printHeader();
+            cout << "\n--- DEBUG MENU ---" << endl;
             cout << "1. Создать файлы с ошибками" << endl;
             cout << "2. Создать чистые файлы" << endl;
             cout << "3. Бенчмарк (замер скорости)" << endl;
-            cout << "> ";
-            
+            cout << "0. Назад" << endl;
+            cout << "\nВыбор > ";
+
             string sub_c;
             cin >> sub_c;
 
@@ -262,35 +328,32 @@ setlocale(LC_ALL, "Russian");
                 bool err = (sub_c == "1");
                 create_files(n, err);
                 cout << "Готово! Создано " << n << " файлов." << endl;
+                this_thread::sleep_for(chrono::seconds(1));
             }
             else if (sub_c == "3") {
                 int n, w;
-                cout << "Файлов: "; cin >> n;
-                cout << "Окно: "; cin >> w;
-                
+                cout << "Файлов для теста: "; cin >> n;
+                cout << "Размер окна: "; cin >> w;
+
                 auto total_start = chrono::high_resolution_clock::now();
-                
                 for (int i = 0; i < n; i++) {
                     string fn = "data_" + to_string(i) + ".json";
                     json j = load_json(fn);
-                    if (!j.empty()) {
-                        process_sensor(j, "s1", w, true); // true = режим замера
-                    }
+                    if (!j.empty()) process_sensor(j, "s1", w, true);
                 }
-                
                 auto total_end = chrono::high_resolution_clock::now();
                 auto ms = chrono::duration_cast<chrono::milliseconds>(total_end - total_start).count();
-                
-                cout << "\n[BENCHMARK RESULT]" << endl;
-                cout << "Файлов: " << n << endl;
-                cout << "Общее время: " << ms << " ms" << endl;
+
+                cout << "\n[РЕЗУЛЬТАТ БЕНЧМАРКА]" << endl;
+                cout << "Обработано файлов: " << n << endl;
+                cout << "Общее время: " << ms << " мс" << endl;
+                cout << "\nНажмите Enter...";
+                cin.ignore(); cin.get();
             }
         }
         else if (choice == "3") {
+            cout << "Завершение программы..." << endl;
             break;
-        }
-        else {
-            cout << "Неверный ввод, повторите." << endl;
         }
     }
     return 0;
