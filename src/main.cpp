@@ -14,6 +14,7 @@
 using namespace std;
 using json = nlohmann::json;
 
+
 // Функция чтения файла
 json load_json(const string& fname)
 {
@@ -196,13 +197,21 @@ void process_sensor(const json& j_data, const string& target_sensor, int win_siz
 
 int main()
 {
-    setlocale(LC_ALL, "Russian");
+setlocale(LC_ALL, "Russian");
+    setConsoleColor(); 
+    
+    printHeader();
+    showLoadingBar("Инициализация системного ядра");
+    showLoadingBar("Загрузка парсера nlohmann/json");
+    showLoadingBar("Проверка калибровки сенсоров");
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
     
     cout << "=== SensorTelemetry v1.0 ===" << endl;
     cout << "Студент: Милохов А.А." << endl;
     cout << "============================" << endl;
 
     while (true) {
+        printHeader();
         cout << "\nМеню:" << endl;
         cout << "1. Анализ данных (чтение -> валидация -> статистика)" << endl;
         cout << "2. Генерация/Тесты (Debug Mode)" << endl;
